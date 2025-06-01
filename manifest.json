@@ -60,7 +60,7 @@
   
   "web_accessible_resources": [
     {
-      "resources": ["blocked.html", "blocked.js", "icons/*"],
+      "resources": ["blocked.html", "blocked.js", "icons/*", "components/*"],
       "matches": ["<all_urls>"]
     }
   ]

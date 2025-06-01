@@ -9,6 +9,8 @@ class PopupManager {
     this.todayStats = null;
     this.sessionTimer = null;
     this.updateInterval = null;
+    this.analyticsUI = null;
+    this.currentTab = 'overview';
     
     this.initialize();
   }
@@ -20,6 +22,11 @@ class PopupManager {
     try {
       // Show loading state
       this.showLoading();
+
+      // Initialize analytics UI component
+      if (window.AnalyticsUI) {
+        this.analyticsUI = new window.AnalyticsUI();
+      }
 
       // Get initial state and stats
       const [stateResponse, statsResponse] = await Promise.all([
@@ -38,6 +45,9 @@ class PopupManager {
       // Update UI with initial data
       this.updateUI();
       this.hideLoading();
+
+      // Set up tab system
+      this.setupTabs();
 
       // Set up periodic updates
       this.updateInterval = setInterval(() => {
@@ -156,6 +166,86 @@ class PopupManager {
         this.unblockSite(domain);
       }
     });
+  }
+
+  /**
+   * Set up tab system
+   */
+  setupTabs() {
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanes = document.querySelectorAll('.tab-pane');
+
+    tabButtons.forEach(button => {
+      button.addEventListener('click', (e) => {
+        const targetTab = e.currentTarget.dataset.tab;
+        this.switchTab(targetTab);
+      });
+    });
+  }
+
+  /**
+   * Switch to a specific tab
+   */
+  switchTab(tabName) {
+    // Update current tab
+    this.currentTab = tabName;
+
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tabName);
+    });
+
+    // Update tab panes
+    document.querySelectorAll('.tab-pane').forEach(pane => {
+      pane.classList.toggle('active', pane.id === `${tabName}-tab`);
+    });
+
+    // Initialize tab content if needed
+    this.initializeTabContent(tabName);
+  }
+
+  /**
+   * Initialize specific tab content
+   */
+  initializeTabContent(tabName) {
+    switch (tabName) {
+      case 'analytics':
+        this.initializeAnalytics();
+        break;
+      case 'goals':
+        this.initializeGoals();
+        break;
+    }
+  }
+
+  /**
+   * Initialize analytics dashboard
+   */
+  initializeAnalytics() {
+    if (!this.analyticsUI) return;
+
+    const analyticsContainer = document.getElementById('analytics-dashboard');
+    if (analyticsContainer && !analyticsContainer.hasChildNodes()) {
+      this.analyticsUI.createAnalyticsDashboard('analytics-dashboard', {
+        showPeriodSelector: true,
+        showSummaryCards: true,
+        showTrends: true,
+        showCategoryBreakdown: true,
+        showTopSites: true
+      });
+    }
+  }
+
+  /**
+   * Initialize productivity goals
+   */
+  initializeGoals() {
+    if (!this.analyticsUI) return;
+
+    const goalsContainer = document.getElementById('productivity-goals-widget');
+    if (goalsContainer && !goalsContainer.hasChildNodes()) {
+      this.analyticsUI.createProductivityGoals('productivity-goals-widget');
+    }
   }
 
   /**

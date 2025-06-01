@@ -888,6 +888,100 @@ class FocusTimeTracker {
           sendResponse(resetResult);
           break;
 
+        // Enhanced Analytics Messages
+        case 'GET_ANALYTICS_DATA':
+          try {
+            const period = message.payload?.period || 'week';
+            const analyticsData = await this.storageManager.getAnalyticsData(period);
+            sendResponse({ success: true, data: analyticsData });
+          } catch (error) {
+            console.error('Error getting analytics data:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_PRODUCTIVITY_GOALS':
+          try {
+            const goals = await this.storageManager.getProductivityGoals();
+            sendResponse({ success: true, data: goals });
+          } catch (error) {
+            console.error('Error getting productivity goals:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'UPDATE_GOAL_PROGRESS':
+          try {
+            const updateResult = await this.storageManager.updateGoalProgress(
+              message.payload?.goalId,
+              message.payload?.progress
+            );
+            sendResponse(updateResult);
+          } catch (error) {
+            console.error('Error updating goal progress:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'UPDATE_SITE_CATEGORY':
+          try {
+            const categoryResult = await this.storageManager.updateSiteCategory(
+              message.payload?.domain,
+              message.payload?.category
+            );
+            sendResponse(categoryResult);
+          } catch (error) {
+            console.error('Error updating site category:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_SITE_CATEGORY':
+          try {
+            const category = this.storageManager.getSiteCategory(message.payload?.domain);
+            sendResponse({ success: true, data: { category } });
+          } catch (error) {
+            console.error('Error getting site category:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_CATEGORY_BREAKDOWN':
+          try {
+            const analyticsData = await this.storageManager.getAnalyticsData('week');
+            sendResponse({ 
+              success: true, 
+              data: { 
+                categories: analyticsData.categoryBreakdown,
+                totalTime: analyticsData.summary.totalTime
+              }
+            });
+          } catch (error) {
+            console.error('Error getting category breakdown:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_WEEKLY_STATS':
+          try {
+            const weeklyData = await this.storageManager.getAnalyticsData('week');
+            sendResponse({ success: true, data: weeklyData });
+          } catch (error) {
+            console.error('Error getting weekly stats:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_MONTHLY_STATS':
+          try {
+            const monthlyData = await this.storageManager.getAnalyticsData('month');
+            sendResponse({ success: true, data: monthlyData });
+          } catch (error) {
+            console.error('Error getting monthly stats:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
         default:
           console.warn('❓ Unknown message type:', message.type);
           sendResponse({ success: false, error: 'Unknown message type' });
