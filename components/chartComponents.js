@@ -27,120 +27,144 @@ class ChartComponents {
       return;
     }
 
-    const config = {
-      width: options.width || 400,
-      height: options.height || 200,
-      padding: { top: 20, right: 20, bottom: 40, left: 60 },
-      showGrid: options.showGrid !== false,
-      showLabels: options.showLabels !== false,
-      lineColor: options.lineColor || this.colors.primary,
-      lineWidth: options.lineWidth || 2,
-      ...options
-    };
+    try {
+      const config = {
+        width: options.width || 400,
+        height: options.height || 200,
+        padding: { top: 20, right: 20, bottom: 40, left: 60 },
+        showGrid: options.showGrid !== false,
+        showLabels: options.showLabels !== false,
+        lineColor: options.lineColor || this.colors.primary,
+        lineWidth: options.lineWidth || 2,
+        ...options
+      };
 
-    // Create canvas
-    const canvas = document.createElement('canvas');
-    canvas.width = config.width;
-    canvas.height = config.height;
-    canvas.style.width = '100%';
-    canvas.style.maxWidth = `${config.width}px`;
-    
-    const ctx = canvas.getContext('2d');
-    
-    // Clear container and add canvas
-    container.innerHTML = '';
-    container.appendChild(canvas);
-
-    // Calculate chart dimensions
-    const chartWidth = config.width - config.padding.left - config.padding.right;
-    const chartHeight = config.height - config.padding.top - config.padding.bottom;
-    const chartX = config.padding.left;
-    const chartY = config.padding.top;
-
-    // Find data ranges
-    const maxValue = Math.max(...data.map(d => d.value));
-    const minValue = Math.min(...data.map(d => d.value));
-    const valueRange = maxValue - minValue || 1;
-
-    // Draw grid
-    if (config.showGrid) {
-      ctx.strokeStyle = '#E5E7EB';
-      ctx.lineWidth = 1;
+      // Create canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = config.width;
+      canvas.height = config.height;
+      canvas.style.width = '100%';
+      canvas.style.maxWidth = `${config.width}px`;
       
-      // Horizontal grid lines
-      for (let i = 0; i <= 5; i++) {
-        const y = chartY + (chartHeight / 5) * i;
-        ctx.beginPath();
-        ctx.moveTo(chartX, y);
-        ctx.lineTo(chartX + chartWidth, y);
-        ctx.stroke();
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        throw new Error('Canvas context not available');
       }
       
-      // Vertical grid lines
-      const stepX = chartWidth / (data.length - 1 || 1);
-      for (let i = 0; i < data.length; i++) {
-        const x = chartX + stepX * i;
-        ctx.beginPath();
-        ctx.moveTo(x, chartY);
-        ctx.lineTo(x, chartY + chartHeight);
-        ctx.stroke();
-      }
-    }
+      // Clear container and add canvas
+      container.innerHTML = '';
+      container.appendChild(canvas);
 
-    // Draw line
-    if (data.length > 1) {
-      ctx.strokeStyle = config.lineColor;
-      ctx.lineWidth = config.lineWidth;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      
-      ctx.beginPath();
-      data.forEach((point, index) => {
-        const x = chartX + (chartWidth / (data.length - 1)) * index;
-        const y = chartY + chartHeight - ((point.value - minValue) / valueRange) * chartHeight;
+      // Calculate chart dimensions
+      const chartWidth = config.width - config.padding.left - config.padding.right;
+      const chartHeight = config.height - config.padding.top - config.padding.bottom;
+      const chartX = config.padding.left;
+      const chartY = config.padding.top;
+
+      // Find data ranges
+      const maxValue = Math.max(...data.map(d => d.value));
+      const minValue = Math.min(...data.map(d => d.value));
+      const valueRange = maxValue - minValue || 1;
+
+      // Draw grid
+      if (config.showGrid) {
+        ctx.strokeStyle = '#E5E7EB';
+        ctx.lineWidth = 1;
         
-        if (index === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
+        // Horizontal grid lines
+        for (let i = 0; i <= 5; i++) {
+          const y = chartY + (chartHeight / 5) * i;
+          ctx.beginPath();
+          ctx.moveTo(chartX, y);
+          ctx.lineTo(chartX + chartWidth, y);
+          ctx.stroke();
         }
-      });
-      ctx.stroke();
+        
+        // Vertical grid lines
+        const stepX = chartWidth / (data.length - 1 || 1);
+        for (let i = 0; i < data.length; i++) {
+          const x = chartX + stepX * i;
+          ctx.beginPath();
+          ctx.moveTo(x, chartY);
+          ctx.lineTo(x, chartY + chartHeight);
+          ctx.stroke();
+        }
+      }
 
-      // Draw points
-      ctx.fillStyle = config.lineColor;
-      data.forEach((point, index) => {
-        const x = chartX + (chartWidth / (data.length - 1)) * index;
-        const y = chartY + chartHeight - ((point.value - minValue) / valueRange) * chartHeight;
+      // Draw line
+      if (data.length > 1) {
+        ctx.strokeStyle = config.lineColor;
+        ctx.lineWidth = config.lineWidth;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
         
         ctx.beginPath();
-        ctx.arc(x, y, 3, 0, 2 * Math.PI);
-        ctx.fill();
-      });
-    }
+        data.forEach((point, index) => {
+          const x = chartX + (chartWidth / (data.length - 1)) * index;
+          const y = chartY + chartHeight - ((point.value - minValue) / valueRange) * chartHeight;
+          
+          if (index === 0) {
+            ctx.moveTo(x, y);
+          } else {
+            ctx.lineTo(x, y);
+          }
+        });
+        ctx.stroke();
 
-    // Draw labels
-    if (config.showLabels) {
-      ctx.fillStyle = this.colors.secondary;
-      ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
-      ctx.textAlign = 'center';
-      
-      // X-axis labels
-      data.forEach((point, index) => {
-        const x = chartX + (chartWidth / (data.length - 1 || 1)) * index;
-        ctx.fillText(point.label, x, config.height - 10);
-      });
-      
-      // Y-axis labels
-      ctx.textAlign = 'right';
-      for (let i = 0; i <= 5; i++) {
-        const value = minValue + (valueRange / 5) * (5 - i);
-        const y = chartY + (chartHeight / 5) * i + 4;
-        ctx.fillText(this.formatChartValue(value), chartX - 10, y);
+        // Draw points
+        ctx.fillStyle = config.lineColor;
+        data.forEach((point, index) => {
+          const x = chartX + (chartWidth / (data.length - 1)) * index;
+          const y = chartY + chartHeight - ((point.value - minValue) / valueRange) * chartHeight;
+          
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, 2 * Math.PI);
+          ctx.fill();
+        });
       }
-    }
 
-    return canvas;
+      // Draw labels
+      if (config.showLabels) {
+        ctx.fillStyle = this.colors.secondary;
+        ctx.font = '12px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        ctx.textAlign = 'center';
+        
+        // X-axis labels
+        data.forEach((point, index) => {
+          const x = chartX + (chartWidth / (data.length - 1 || 1)) * index;
+          ctx.fillText(point.label, x, config.height - 10);
+        });
+        
+        // Y-axis labels
+        ctx.textAlign = 'right';
+        for (let i = 0; i <= 5; i++) {
+          const value = minValue + (valueRange / 5) * (5 - i);
+          const y = chartY + (chartHeight / 5) * i + 4;
+          ctx.fillText(this.formatChartValue(value), chartX - 10, y);
+        }
+      }
+
+      return canvas;
+    } catch (error) {
+      console.error('Error creating line chart:', error);
+      // Fallback to simple text display
+      container.innerHTML = `
+        <div style="
+          text-align: center; 
+          padding: 40px; 
+          color: #6B7280;
+          border: 1px solid #E5E7EB;
+          border-radius: 8px;
+        ">
+          <div style="margin-bottom: 8px;">📊</div>
+          <div>Chart not available</div>
+          <div style="font-size: 12px; margin-top: 4px;">
+            ${data.length} data points available
+          </div>
+        </div>
+      `;
+      return null;
+    }
   }
 
   /**

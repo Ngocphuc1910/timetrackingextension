@@ -26,6 +26,9 @@ class PopupManager {
       // Initialize analytics UI component
       if (window.AnalyticsUI) {
         this.analyticsUI = new window.AnalyticsUI();
+        console.log('✅ Analytics UI initialized successfully');
+      } else {
+        console.warn('⚠️ Analytics UI component not available - analytics features will be disabled');
       }
 
       // Get initial state and stats
@@ -175,9 +178,22 @@ class PopupManager {
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabPanes = document.querySelectorAll('.tab-pane');
 
+    if (tabButtons.length === 0) {
+      console.warn('⚠️ No tab buttons found - tabbed interface disabled');
+      return;
+    }
+
+    if (tabPanes.length === 0) {
+      console.warn('⚠️ No tab panes found - tabbed interface disabled');
+      return;
+    }
+
+    console.log(`✅ Setting up ${tabButtons.length} tabs`);
+
     tabButtons.forEach(button => {
       button.addEventListener('click', (e) => {
         const targetTab = e.currentTarget.dataset.tab;
+        console.log(`🔄 Switching to tab: ${targetTab}`);
         this.switchTab(targetTab);
       });
     });

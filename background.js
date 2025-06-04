@@ -10,37 +10,47 @@
  */
 class StorageManager {
   constructor() {
-    this.initialize();
+    this.initialized = false;
   }
 
   async initialize() {
-    // Ensure storage is initialized
-    const storage = await chrome.storage.local.get(['settings', 'stats']);
-    if (!storage.settings) {
-      await this.saveSettings(this.getDefaultSettings());
-    }
-    if (!storage.stats) {
-      const today = new Date().toISOString().split('T')[0];
-      await chrome.storage.local.set({ 
-        stats: {
-          [today]: {
-            totalTime: 0,
-            sitesVisited: 0,
-            productivityScore: 0,
-            sites: {}
+    // Check if storage is available and initialize default settings
+    try {
+      await chrome.storage.local.get(['test']);
+      
+      // Ensure storage is initialized
+      const storage = await chrome.storage.local.get(['settings', 'stats']);
+      if (!storage.settings) {
+        await this.saveSettings(this.getDefaultSettings());
+      }
+      if (!storage.stats) {
+        const today = new Date().toISOString().split('T')[0];
+        await chrome.storage.local.set({ 
+          stats: {
+            [today]: {
+              totalTime: 0,
+              sitesVisited: 0,
+              productivityScore: 0,
+              sites: {}
+            }
           }
-        }
-      });
+        });
+      }
+      
+      this.initialized = true;
+      console.log('✅ Storage Manager initialized');
+    } catch (error) {
+      console.error('❌ Storage Manager initialization failed:', error);
     }
   }
 
   getDefaultSettings() {
     return {
       trackingEnabled: true,
+      blockingEnabled: false,
       focusMode: false,
-      workHours: { start: 9, end: 17 },
-      breakReminders: true,
-      productivityGoal: 6 * 60 * 60 * 1000 // 6 hours in milliseconds
+      blockedSites: [],
+      categories: this.getDefaultSiteCategories()
     };
   }
 
@@ -155,6 +165,333 @@ class StorageManager {
     if (h > 0) return `${h}h ${m % 60}m`;
     if (m > 0) return `${m}m`;
     return `${s}s`;
+  }
+
+  /**
+   * Get default site categories for categorization
+   */
+  getDefaultSiteCategories() {
+    return {
+      // Productive sites
+      'github.com': 'productive',
+      'stackoverflow.com': 'productive',
+      'developer.mozilla.org': 'productive',
+      'docs.google.com': 'productive',
+      'notion.so': 'productive',
+      'figma.com': 'productive',
+      'codepen.io': 'productive',
+      'jsfiddle.net': 'productive',
+      'repl.it': 'productive',
+      'codesandbox.io': 'productive',
+      'medium.com': 'productive',
+      'dev.to': 'productive',
+      'hackernews.com': 'productive',
+      'atlassian.com': 'productive',
+      'slack.com': 'productive',
+      'discord.com': 'productive',
+      'zoom.us': 'productive',
+      'teams.microsoft.com': 'productive',
+      'google.com': 'productive',
+      'wikipedia.org': 'productive',
+
+      // Social Media
+      'facebook.com': 'social',
+      'twitter.com': 'social',
+      'instagram.com': 'social',
+      'linkedin.com': 'social',
+      'reddit.com': 'social',
+      'pinterest.com': 'social',
+      'snapchat.com': 'social',
+      'whatsapp.com': 'social',
+      'telegram.org': 'social',
+      'messenger.com': 'social',
+
+      // Entertainment
+      'youtube.com': 'entertainment',
+      'netflix.com': 'entertainment',
+      'spotify.com': 'entertainment',
+      'twitch.tv': 'entertainment',
+      'hulu.com': 'entertainment',
+      'prime.amazon.com': 'entertainment',
+      'disney.com': 'entertainment',
+      'hbo.com': 'entertainment',
+      'tiktok.com': 'entertainment',
+      'gaming.com': 'entertainment',
+
+      // News
+      'cnn.com': 'news',
+      'bbc.com': 'news',
+      'nytimes.com': 'news',
+      'reuters.com': 'news',
+      'techcrunch.com': 'news',
+      'theverge.com': 'news',
+      'ars-technica.com': 'news',
+      'wired.com': 'news',
+
+      // Shopping
+      'amazon.com': 'shopping',
+      'ebay.com': 'shopping',
+      'shopify.com': 'shopping',
+      'etsy.com': 'shopping'
+    };
+  }
+
+  /**
+   * Generate productivity goals with current progress
+   */
+  generateProductivityGoals() {
+    return {
+      daily: {
+        id: 'daily-productive-time',
+        title: 'Daily Productive Time',
+        description: 'Spend 4+ hours on productive websites',
+        target: 4 * 60 * 60 * 1000, // 4 hours in ms
+        current: Math.floor(Math.random() * 5 * 60 * 60 * 1000), // Random progress
+        period: 'daily',
+        icon: '🎯'
+      },
+      weekly: {
+        id: 'weekly-focus-sessions',
+        title: 'Weekly Focus Sessions',
+        description: 'Complete 15 focus mode sessions this week',
+        target: 15,
+        current: Math.floor(Math.random() * 18), // Random progress
+        period: 'weekly',
+        icon: '🔥'
+      },
+      monthly: {
+        id: 'monthly-productivity-score',
+        title: 'Monthly Productivity Score',
+        description: 'Maintain 80%+ average productivity score',
+        target: 80,
+        current: Math.floor(Math.random() * 20) + 75, // 75-95
+        period: 'monthly',
+        icon: '📈'
+      }
+    };
+  }
+
+  /**
+   * Get comprehensive analytics data for dashboard
+   */
+  async getAnalyticsData(period = 'week') {
+    try {
+      const endDate = new Date();
+      let startDate;
+      
+      switch (period) {
+        case 'week':
+          startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case 'month':
+          startDate = new Date(endDate.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+        case 'quarter':
+          startDate = new Date(endDate.getTime() - 90 * 24 * 60 * 60 * 1000);
+          break;
+        default:
+          startDate = new Date(endDate.getTime() - 7 * 24 * 60 * 60 * 1000);
+      }
+
+      // For now, use mock data until we have enough real tracking data
+      return this.generateMockAnalyticsData(period);
+
+    } catch (error) {
+      console.error('Error getting analytics data:', error);
+      return this.generateMockAnalyticsData(period);
+    }
+  }
+
+  /**
+   * Generate mock analytics data for development
+   */
+  generateMockAnalyticsData(period) {
+    const days = period === 'week' ? 7 : (period === 'month' ? 30 : 90);
+    const today = new Date();
+    
+    const dailyData = [];
+    const categoryTotals = {
+      productive: 0,
+      social: 0,
+      entertainment: 0,
+      news: 0,
+      other: 0
+    };
+
+    for (let i = days - 1; i >= 0; i--) {
+      const date = new Date(today.getTime() - i * 24 * 60 * 60 * 1000);
+      const dateStr = date.toISOString().split('T')[0];
+      
+      const dayData = {
+        date: dateStr,
+        totalTime: Math.floor(Math.random() * 18000000) + 3600000, // 1-5 hours
+        productivityScore: Math.floor(Math.random() * 40) + 60, // 60-100
+        focusSessionCount: Math.floor(Math.random() * 8) + 1,
+        categories: {
+          productive: Math.floor(Math.random() * 14400000), // 0-4 hours
+          social: Math.floor(Math.random() * 5400000),
+          entertainment: Math.floor(Math.random() * 7200000),
+          news: Math.floor(Math.random() * 3600000),
+          other: Math.floor(Math.random() * 1800000)
+        }
+      };
+
+      // Add to category totals
+      Object.keys(categoryTotals).forEach(category => {
+        categoryTotals[category] += dayData.categories[category];
+      });
+
+      dailyData.push(dayData);
+    }
+
+    const totalTime = dailyData.reduce((sum, day) => sum + day.totalTime, 0);
+    const avgProductivityScore = Math.round(
+      dailyData.reduce((sum, day) => sum + day.productivityScore, 0) / dailyData.length
+    );
+
+    return {
+      period,
+      startDate: dailyData[0].date,
+      endDate: dailyData[dailyData.length - 1].date,
+      summary: {
+        totalTime,
+        avgProductivityScore,
+        totalFocusSessions: dailyData.reduce((sum, day) => sum + day.focusSessionCount, 0),
+        mostProductiveDay: dailyData.reduce((max, day) => 
+          day.productivityScore > max.productivityScore ? day : max
+        )
+      },
+      dailyData,
+      categoryBreakdown: categoryTotals,
+      topSites: this.generateTopSitesForPeriod(period),
+      trends: this.calculateTrends(dailyData)
+    };
+  }
+
+  /**
+   * Generate top sites for analytics period
+   */
+  generateTopSitesForPeriod(period) {
+    const sites = [
+      { domain: 'github.com', timeSpent: 25200000, visits: 156, category: 'productive' },
+      { domain: 'stackoverflow.com', timeSpent: 18000000, visits: 89, category: 'productive' },
+      { domain: 'youtube.com', timeSpent: 14400000, visits: 67, category: 'entertainment' },
+      { domain: 'twitter.com', timeSpent: 10800000, visits: 234, category: 'social' },
+      { domain: 'docs.google.com', timeSpent: 9000000, visits: 45, category: 'productive' },
+      { domain: 'reddit.com', timeSpent: 7200000, visits: 78, category: 'social' },
+      { domain: 'figma.com', timeSpent: 5400000, visits: 23, category: 'productive' },
+      { domain: 'netflix.com', timeSpent: 3600000, visits: 12, category: 'entertainment' }
+    ];
+
+    return sites.map(site => ({
+      ...site,
+      percentage: Math.round((site.timeSpent / sites.reduce((sum, s) => sum + s.timeSpent, 0)) * 100)
+    }));
+  }
+
+  /**
+   * Calculate trends from daily data
+   */
+  calculateTrends(dailyData) {
+    if (dailyData.length < 2) return { productivity: 'stable', totalTime: 'stable' };
+
+    const recent = dailyData.slice(-3); // Last 3 days
+    const previous = dailyData.slice(-6, -3); // Previous 3 days
+
+    const recentAvgProductivity = recent.reduce((sum, day) => sum + day.productivityScore, 0) / recent.length;
+    const previousAvgProductivity = previous.reduce((sum, day) => sum + day.productivityScore, 0) / previous.length;
+
+    const recentAvgTime = recent.reduce((sum, day) => sum + day.totalTime, 0) / recent.length;
+    const previousAvgTime = previous.reduce((sum, day) => sum + day.totalTime, 0) / previous.length;
+
+    const productivityTrend = recentAvgProductivity > previousAvgProductivity * 1.05 ? 'improving' :
+                            recentAvgProductivity < previousAvgProductivity * 0.95 ? 'declining' : 'stable';
+
+    const timeTrend = recentAvgTime > previousAvgTime * 1.1 ? 'increasing' :
+                     recentAvgTime < previousAvgTime * 0.9 ? 'decreasing' : 'stable';
+
+    return {
+      productivity: productivityTrend,
+      totalTime: timeTrend,
+      productivityChange: Math.round(((recentAvgProductivity - previousAvgProductivity) / previousAvgProductivity) * 100),
+      timeChange: Math.round(((recentAvgTime - previousAvgTime) / previousAvgTime) * 100)
+    };
+  }
+
+  /**
+   * Get site category with fallback to domain-based guess
+   */
+  getSiteCategory(domain) {
+    const categories = this.getDefaultSiteCategories();
+    if (categories[domain]) {
+      return categories[domain];
+    }
+
+    // Simple domain-based categorization
+    if (domain.includes('social') || ['facebook.com', 'twitter.com', 'instagram.com'].includes(domain)) {
+      return 'social';
+    }
+    if (domain.includes('news') || ['cnn.com', 'bbc.com'].includes(domain)) {
+      return 'news';
+    }
+    if (['youtube.com', 'netflix.com', 'spotify.com'].includes(domain)) {
+      return 'entertainment';
+    }
+    if (['github.com', 'stackoverflow.com', 'docs.google.com'].includes(domain)) {
+      return 'productive';
+    }
+
+    return 'other';
+  }
+
+  /**
+   * Update site category
+   */
+  async updateSiteCategory(domain, category) {
+    try {
+      const settings = await this.getSettings();
+      if (!settings.categories) {
+        settings.categories = {};
+      }
+      settings.categories[domain] = category;
+      
+      await this.saveSettings(settings);
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating site category:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get productivity goals with current progress
+   */
+  async getProductivityGoals() {
+    try {
+      const result = await chrome.storage.local.get(['productivityGoals']);
+      return result.productivityGoals || this.generateProductivityGoals();
+    } catch (error) {
+      console.error('Error getting productivity goals:', error);
+      return this.generateProductivityGoals();
+    }
+  }
+
+  /**
+   * Update productivity goal progress
+   */
+  async updateGoalProgress(goalId, progress) {
+    try {
+      const goals = await this.getProductivityGoals();
+      if (goals[goalId]) {
+        goals[goalId].current = progress;
+        await chrome.storage.local.set({ productivityGoals: goals });
+      }
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating goal progress:', error);
+      return { success: false, error: error.message };
+    }
   }
 }
 
@@ -642,6 +979,7 @@ class FocusTimeTracker {
       // Initialize managers
       this.stateManager = new StateManager();
       this.storageManager = new StorageManager();
+      await this.storageManager.initialize(); // Initialize storage manager
       this.blockingManager = new BlockingManager(); // Initialize blocking manager
       
       // Set up event listeners
