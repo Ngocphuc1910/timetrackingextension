@@ -10,10 +10,44 @@ class BlockedPage {
 
   async initialize() {
     try {
-      // Get blocked site info from URL
+      // Get cached URL from background script
+      const response = await chrome.runtime.sendMessage({ type: 'GET_CACHED_URL' });
+      const cachedUrl = response?.data?.url;
+      
+      // Fallback to URL params if cache miss
       const urlParams = new URLSearchParams(window.location.search);
-      const blockedUrl = urlParams.get('url') || window.location.href;
+      const blockedUrl = cachedUrl || urlParams.get('url') || 'Unknown Site';
       const domain = this.extractDomain(blockedUrl);
+      
+      // Store for override handler
+      this.originalUrl = blockedUrl;
+      
+      // Check if focus mode is still active - auto-redirect if OFF
+      try {
+        const focusResponse = await chrome.runtime.sendMessage({ type: 'GET_FOCUS_STATUS' });
+        console.log('🔍 Focus status response:', focusResponse);
+        
+        if (focusResponse?.success && focusResponse.data && !focusResponse.data.focusMode) {
+          console.log('🔓 Focus mode is OFF, auto-redirecting to:', this.originalUrl);
+          if (this.originalUrl && this.originalUrl !== 'Unknown Site') {
+            // Clear cached URL before redirecting
+            await chrome.runtime.sendMessage({ type: 'CLEAR_CACHED_URL' });
+            window.location.href = this.originalUrl;
+            return; // Exit early, redirect in progress
+          } else {
+            // Fallback - redirect to domain homepage like override button
+            const domain = this.extractDomain(blockedUrl);
+            if (domain && domain !== 'Unknown Site') {
+              await chrome.runtime.sendMessage({ type: 'CLEAR_CACHED_URL' });
+              window.location.href = `https://${domain}`;
+              return;
+            }
+          }
+        }
+      } catch (focusError) {
+        console.error('Error checking focus status:', focusError);
+        // Continue with normal blocking page if focus check fails
+      }
       
       document.getElementById('blockedSite').textContent = domain;
       
@@ -60,29 +94,29 @@ class BlockedPage {
 
   setupEventListeners() {
     document.getElementById('backBtn').addEventListener('click', () => {
-      history.back();
+      // Navigate to deep focus page in the same tab
+      window.location.href = 'https://make10000hours.com/#/deep-focus';
     });
 
     document.getElementById('openPopupBtn').addEventListener('click', () => {
-      chrome.runtime.sendMessage({ type: 'OPEN_POPUP' });
+      // Navigate to deep focus page in the same tab
+      window.location.href = 'https://make10000hours.com/#/deep-focus';
     });
 
     document.getElementById('overrideBtn').addEventListener('click', () => {
       this.handleOverride();
     });
 
-    document.getElementById('debugBtn').addEventListener('click', () => {
+    // Debug info can be toggled by clicking the timer
+    document.getElementById('sessionTimer')?.addEventListener('click', () => {
       this.toggleDebugInfo();
     });
   }
 
   toggleDebugInfo() {
     const debugInfo = document.getElementById('debugInfo');
-    if (debugInfo.style.display === 'none') {
-      debugInfo.style.display = 'block';
-    } else {
-      debugInfo.style.display = 'none';
-    }
+    const currentDisplay = window.getComputedStyle(debugInfo).display;
+    debugInfo.style.display = currentDisplay === 'none' ? 'block' : 'none';
   }
 
   async loadFocusStats() {
@@ -92,6 +126,7 @@ class BlockedPage {
         const stats = response.data;
         document.getElementById('focusTime').textContent = this.formatTime(stats.focusTime || 0);
         document.getElementById('blockedAttempts').textContent = stats.blockedAttempts || 0;
+        document.getElementById('overrideTime').textContent = this.formatTime(stats.overrideTime || 0);
       }
     } catch (error) {
       console.error('Error loading focus stats:', error);
@@ -111,11 +146,27 @@ class BlockedPage {
 
   async handleOverride() {
     try {
+      // Prevent multiple rapid clicks
+      const overrideBtn = document.getElementById('overrideBtn');
+      if (overrideBtn.disabled) {
+        return;
+      }
+
       const confirmed = confirm(
         'This will temporarily allow access to this site for 5 minutes. Are you sure?'
       );
       
       if (confirmed) {
+        // Disable button and update content
+        overrideBtn.disabled = true;
+        const originalContent = overrideBtn.innerHTML;
+        overrideBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>
+          </svg>
+          Processing...
+        `;
+        
         const domain = document.getElementById('blockedSite').textContent;
         const response = await chrome.runtime.sendMessage({ 
           type: 'OVERRIDE_BLOCK', 
@@ -123,14 +174,41 @@ class BlockedPage {
         });
         
         if (response && response.success) {
-          // Redirect to original site
-          const urlParams = new URLSearchParams(window.location.search);
-          const originalUrl = urlParams.get('url') || 'about:blank';
-          window.location.href = originalUrl;
+          // Record override in web app if connected
+          await chrome.runtime.sendMessage({ 
+            type: 'RECORD_OVERRIDE_SESSION', 
+            payload: { domain, duration: 5 } // 5 minutes
+          });
+          
+          // Clear cached URL before redirecting
+          await chrome.runtime.sendMessage({ type: 'CLEAR_CACHED_URL' });
+          
+          // Redirect to original site using cached URL
+          if (this.originalUrl && this.originalUrl !== 'Unknown Site') {
+            window.location.href = this.originalUrl;
+          } else {
+            // Fallback - try to go back or to domain homepage
+            const domain = document.getElementById('blockedSite').textContent;
+            window.location.href = `https://${domain}`;
+          }
+        } else {
+          // Re-enable button if override failed
+          overrideBtn.disabled = false;
+          overrideBtn.innerHTML = originalContent;
         }
       }
     } catch (error) {
       console.error('Error handling override:', error);
+      // Re-enable button on error
+      const overrideBtn = document.getElementById('overrideBtn');
+      overrideBtn.disabled = false;
+      overrideBtn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <polyline points="12 6 12 12 16 14"/>
+        </svg>
+        Override (5 min)
+      `;
     }
   }
 
@@ -185,5 +263,65 @@ class BlockedPage {
   }
 }
 
-// Initialize blocked page
-new BlockedPage(); 
+// Initialize the blocked page
+new BlockedPage();
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Get DOM elements
+  const backBtn = document.getElementById('backBtn');
+  const openPopupBtn = document.getElementById('openPopupBtn');
+  const overrideBtn = document.getElementById('overrideBtn');
+  const modal = document.getElementById('actionModal');
+  const modalTitle = document.getElementById('modalTitle');
+  const modalContent = document.getElementById('modalContent');
+  const modalClose = document.getElementById('modalClose');
+
+  const DASHBOARD_URL = 'https://make10000hours.com/#/deep-focus';
+
+  // Button click handlers for navigation
+  function navigateToDashboard(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    window.location.replace(DASHBOARD_URL);
+  }
+
+  // Attach navigation handlers
+  backBtn.addEventListener('click', navigateToDashboard);
+  openPopupBtn.addEventListener('click', navigateToDashboard);
+
+  // Override button handler
+  overrideBtn.addEventListener('click', function() {
+    showModal('Override Session', 'Are you sure you want to override for 5 minutes?');
+  });
+
+  // Modal functions
+  function showModal(title, content) {
+    modalTitle.textContent = title;
+    modalContent.textContent = content;
+    modal.classList.add('visible');
+  }
+
+  function hideModal() {
+    modal.classList.remove('visible');
+  }
+
+  // Close modal when clicking close button
+  modalClose.addEventListener('click', hideModal);
+
+  // Close modal when clicking outside
+  modal.addEventListener('click', function(e) {
+    if (e.target === modal) {
+      hideModal();
+    }
+  });
+
+  // Initialize debug panel if needed
+  initializeDebugPanel();
+});
+
+function initializeDebugPanel() {
+  const debugPanel = document.getElementById('debugInfo');
+  if (debugPanel) {
+    // Add your debug panel logic here
+  }
+} 

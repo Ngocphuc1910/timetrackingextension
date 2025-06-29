@@ -7,6 +7,7 @@ class PopupManager {
   constructor() {
     this.currentState = null;
     this.todayStats = null;
+    this.userInfo = null;
     this.sessionTimer = null;
     this.updateInterval = null;
     this.analyticsUI = null;
@@ -26,15 +27,14 @@ class PopupManager {
       // Initialize analytics UI component
       if (window.AnalyticsUI) {
         this.analyticsUI = new window.AnalyticsUI();
-        console.log('✅ Analytics UI initialized successfully');
-      } else {
-        console.warn('⚠️ Analytics UI component not available - analytics features will be disabled');
       }
 
-      // Get initial state and stats
-      const [stateResponse, statsResponse] = await Promise.all([
+      // Get initial state and stats - always get fresh focus state
+      const [stateResponse, statsResponse, focusStateResponse, userInfoResponse] = await Promise.all([
         this.sendMessage('GET_CURRENT_STATE'),
-        this.sendMessage('GET_TODAY_STATS')
+        this.sendMessage('GET_TODAY_STATS'),
+        this.sendMessage('GET_FOCUS_STATE'),
+        this.sendMessage('GET_USER_INFO')
       ]);
 
       if (stateResponse?.success) {
@@ -45,6 +45,19 @@ class PopupManager {
         this.todayStats = statsResponse.data;
       }
 
+      // Always use the latest focus state to ensure sync
+      if (focusStateResponse?.success) {
+        if (!this.currentState.focusStats) {
+          this.currentState.focusStats = {};
+        }
+        this.currentState.focusStats.focusMode = focusStateResponse.data.focusMode;
+      }
+
+      // Store user info
+      if (userInfoResponse?.success) {
+        this.userInfo = userInfoResponse.data;
+      }
+
       // Update UI with initial data
       this.updateUI();
       this.hideLoading();
@@ -52,19 +65,29 @@ class PopupManager {
       // Set up tab system
       this.setupTabs();
 
-      // Set up periodic updates
+      // Set up periodic updates with reduced frequency
       this.updateInterval = setInterval(() => {
-        this.refreshState();
-      }, 1000);
+        // Only refresh if popup is visible
+        if (document.visibilityState === 'visible') {
+          this.refreshState();
+        }
+      }, 5000); // Check every 5 seconds instead of 2
 
       // Set up event listeners
       this.setupEventListeners();
 
-      // Listen for stats updates from background
+      // Listen for updates from background
       chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === 'STATS_UPDATED') {
           this.todayStats = message.payload;
           this.updateUI();
+        } else if (message.type === 'FOCUS_STATE_CHANGED') {
+          // Update local state and UI without triggering another toggle
+          this.currentState.focusStats.focusMode = message.payload.isActive;
+          this.updateUI();
+        } else if (message.type === 'USER_INFO_UPDATED') {
+          this.userInfo = message.payload;
+          this.updateUserInfo();
         }
         sendResponse({ success: true });
         return true;
@@ -120,6 +143,12 @@ class PopupManager {
     const exportBtn = document.getElementById('export-data-btn');
     if (exportBtn) {
       exportBtn.addEventListener('click', () => this.exportData());
+    }
+
+    // Auto-management toggle
+    const autoMgmtToggle = document.getElementById('auto-management-toggle');
+    if (autoMgmtToggle) {
+      autoMgmtToggle.addEventListener('change', (e) => this.toggleAutoManagement(e.target.checked));
     }
 
     // View all sites
@@ -283,14 +312,81 @@ class PopupManager {
   }
 
   /**
+   * Refresh focus state specifically to catch changes from web app
+   */
+  async refreshFocusState() {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        type: 'GET_FOCUS_STATE'
+      });
+
+      if (response?.success) {
+        const currentFocusMode = this.currentState?.focusStats?.focusMode || false;
+        const newFocusMode = response.data.focusMode;
+        
+        // Only update if state actually changed to avoid unnecessary UI updates
+        if (currentFocusMode !== newFocusMode) {
+          console.log('🔄 Focus state changed, updating popup UI:', newFocusMode);
+          if (!this.currentState.focusStats) {
+            this.currentState.focusStats = {};
+          }
+          this.currentState.focusStats.focusMode = newFocusMode;
+          this.updateUI();
+        }
+      }
+    } catch (error) {
+      console.debug('Could not refresh focus state:', error);
+    }
+  }
+
+  /**
+   * Refresh user info from background
+   */
+  async refreshUserInfo() {
+    try {
+      const response = await this.sendMessage('GET_USER_INFO');
+      if (response?.success) {
+        // Only update if the user info has changed
+        const newUserInfo = response.data;
+        if (JSON.stringify(this.userInfo) !== JSON.stringify(newUserInfo)) {
+          this.userInfo = newUserInfo;
+          this.updateUserInfo();
+          console.log('👤 User info refreshed:', this.userInfo);
+        }
+      }
+    } catch (error) {
+      console.error('Error refreshing user info:', error);
+    }
+  }
+
+  /**
    * Update UI elements with current state
    */
   updateUI() {
+    // Update header with focus mode status
     this.updateHeader();
+    
+    // Update user info section
+    this.updateUserInfo();
+    
+    // Update stats overview
     this.updateStatsOverview();
+    
+    // Update current session info
     this.updateCurrentSession();
+    
+    // Update top sites
     this.updateTopSites();
-    this.updateActionButtons();
+
+    // Update focus mode button text
+    const focusModeBtn = document.getElementById('focus-mode-toggle');
+    if (focusModeBtn) {
+      const isFocusModeActive = this.currentState?.focusStats?.focusMode || false;
+      const btnText = focusModeBtn.querySelector('.btn-text');
+      if (btnText) {
+        btnText.textContent = isFocusModeActive ? 'Disable Focus Mode' : 'Enable Focus Mode';
+      }
+    }
   }
 
   /**
@@ -330,6 +426,62 @@ class PopupManager {
         <span class="focus-text">Distracted</span>
       `;
       focusIndicator.className = 'focus-indicator inactive';
+    }
+  }
+
+  /**
+   * Update user info display
+   */
+  updateUserInfo() {
+    const userInfoElement = document.getElementById('user-info');
+    const noUserInfoElement = document.getElementById('no-user-info');
+    const userNameElement = document.getElementById('user-name');
+    const userEmailElement = document.getElementById('user-email');
+    const userAvatarElement = document.getElementById('user-avatar-text');
+    const syncIndicatorElement = document.getElementById('sync-indicator');
+
+    if (this.userInfo && this.userInfo.userId) {
+      // Show user info
+      if (userInfoElement) userInfoElement.classList.remove('hidden');
+      if (noUserInfoElement) noUserInfoElement.classList.add('hidden');
+
+      // Update user details
+      const displayName = this.userInfo.displayName || this.userInfo.userEmail || 'Anonymous';
+      const email = this.userInfo.userEmail || this.userInfo.userId;
+      
+      if (userNameElement) userNameElement.textContent = displayName;
+      if (userEmailElement) userEmailElement.textContent = email;
+      
+      // Generate avatar initials
+      if (userAvatarElement) {
+        const initials = displayName
+          .split(' ')
+          .map(name => name.charAt(0))
+          .join('')
+          .substring(0, 2)
+          .toUpperCase();
+        userAvatarElement.textContent = initials || '?';
+      }
+
+      // Update sync indicator
+      if (syncIndicatorElement) {
+        syncIndicatorElement.classList.remove('offline');
+        syncIndicatorElement.title = 'Connected to web app';
+      }
+
+      console.log('👤 User info displayed:', { displayName, email });
+    } else {
+      // Show no user info
+      if (userInfoElement) userInfoElement.classList.add('hidden');
+      if (noUserInfoElement) noUserInfoElement.classList.remove('hidden');
+
+      // Update sync indicator
+      if (syncIndicatorElement) {
+        syncIndicatorElement.classList.add('offline');
+        syncIndicatorElement.title = 'Not connected to web app';
+      }
+
+      console.log('👤 No user info available');
     }
   }
 
@@ -387,8 +539,20 @@ class PopupManager {
         if (siteIcon) siteIcon.textContent = this.getSiteIcon(domain);
         if (siteName) siteName.textContent = domain;
         if (siteTime && startTime) {
-          const elapsed = Date.now() - startTime;
-          siteTime.textContent = `Active for ${this.formatTime(elapsed)}`;
+          const saved = this.currentState?.currentSession?.savedTime || 0;
+          const elapsed = saved + (Date.now() - startTime);
+          const minutes = Math.floor(elapsed / 60000);
+          const seconds = Math.floor((elapsed % 60000) / 1000);
+          
+          // Format time display
+          let activeText = 'Active for ';
+          if (minutes > 0) {
+            activeText += `${minutes}m `;
+          }
+          if (seconds > 0 || minutes === 0) {
+            activeText += `${seconds}s`;
+          }
+          siteTime.textContent = activeText;
         }
 
         // Remove dashed border when active
@@ -397,24 +561,19 @@ class PopupManager {
 
       // Update timer
       if (sessionTimer && startTime) {
-        const elapsed = Date.now() - startTime;
-        sessionTimer.textContent = this.formatTime(elapsed, 'clock');
+        const saved = this.currentState?.currentSession?.savedTime || 0;
+        const elapsed = saved + (Date.now() - startTime);
+        const minutes = Math.floor(elapsed / 60000);
+        const seconds = Math.floor((elapsed % 60000) / 1000);
+        sessionTimer.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
       }
     } else {
       // No active session
       if (currentSite) {
-        const siteIcon = currentSite.querySelector('.site-icon');
-        const siteName = currentSite.querySelector('.site-name');
+        currentSite.style.border = '2px dashed var(--border-color)';
         const siteTime = currentSite.querySelector('.site-time');
-        
-        if (siteIcon) siteIcon.textContent = '🌐';
-        if (siteName) siteName.textContent = 'No active site';
-        if (siteTime) siteTime.textContent = 'Not tracking';
-
-        // Restore dashed border
-        currentSite.style.border = '2px dashed var(--gray-300)';
+        if (siteTime) siteTime.textContent = 'Not active';
       }
-
       if (sessionTimer) {
         sessionTimer.textContent = '00:00';
       }
@@ -850,30 +1009,30 @@ class PopupManager {
   /**
    * Format time in milliseconds to human readable string
    */
-  formatTime(milliseconds, format = 'short') {
-    if (!milliseconds || milliseconds < 0) return '0s';
-
-    const seconds = Math.floor(milliseconds / 1000);
+  formatTime(ms, format = 'compact') {
+    if (!ms) return '0s';
+    
+    const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
-
-    switch (format) {
-      case 'clock':
-        if (hours > 0) {
-          return `${hours.toString().padStart(2, '0')}:${(minutes % 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
-        } else {
-          return `${minutes.toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
-        }
-      case 'short':
-      default:
-        if (hours > 0) {
-          return `${hours}h ${minutes % 60}m`;
-        } else if (minutes > 0) {
-          return `${minutes}m`;
-        } else {
-          return `${seconds}s`;
-        }
+    
+    if (format === 'clock') {
+      return `${String(hours).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
     }
+    
+    // For times less than 1 minute, show seconds
+    if (minutes < 1) {
+      return `${seconds}s`;
+    }
+    
+    // For times less than 1 hour, show minutes
+    if (hours < 1) {
+      return `${minutes}m`;
+    }
+    
+    // For times over 1 hour
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
   }
 
   /**
@@ -1039,6 +1198,103 @@ class PopupManager {
     }
     if (this.sessionTimer) {
       clearInterval(this.sessionTimer);
+    }
+  }
+
+  /**
+   * Update activity status display
+   */
+  async updateActivityStatus() {
+    try {
+      const response = await this.sendMessage('GET_ACTIVITY_STATE');
+      if (response?.success) {
+        const activityState = response.data;
+        
+        // Update activity indicator
+        const activityDot = document.getElementById('activity-dot');
+        const activityText = document.getElementById('activity-text');
+        const pauseInfo = document.getElementById('pause-info');
+        const pauseDuration = document.getElementById('pause-duration');
+        
+        if (activityDot && activityText) {
+          if (activityState.isSessionPaused) {
+            activityDot.className = 'activity-dot paused';
+            activityText.textContent = 'Paused';
+            
+            if (pauseInfo && pauseDuration) {
+              const pausedFor = activityState.pausedAt ? 
+                Math.round((Date.now() - new Date(activityState.pausedAt).getTime()) / 1000) : 0;
+              pauseDuration.textContent = `Paused for ${this.formatDuration(pausedFor)}`;
+              pauseInfo.classList.remove('hidden');
+            }
+          } else if (activityState.isUserActive) {
+            activityDot.className = 'activity-dot active';
+            activityText.textContent = 'Active';
+            if (pauseInfo) pauseInfo.classList.add('hidden');
+          } else {
+            activityDot.className = 'activity-dot inactive';
+            activityText.textContent = `Idle ${this.formatDuration(activityState.inactivityDuration)}`;
+            if (pauseInfo) pauseInfo.classList.add('hidden');
+          }
+        }
+
+        // Update auto-management toggle
+        const autoMgmtToggle = document.getElementById('auto-management-toggle');
+        if (autoMgmtToggle) {
+          autoMgmtToggle.checked = activityState.autoManagementEnabled;
+        }
+      }
+    } catch (error) {
+      console.error('Error updating activity status:', error);
+    }
+  }
+
+  /**
+   * Toggle auto-management setting
+   */
+  async toggleAutoManagement(enabled) {
+    try {
+      console.log('🔧 Toggling auto-management:', enabled);
+      
+      const response = await this.sendMessage('TOGGLE_AUTO_MANAGEMENT', { enabled });
+      
+      if (response?.success) {
+        console.log('✅ Auto-management toggled successfully');
+        this.showNotification(
+          enabled ? 'Auto-pause enabled' : 'Auto-pause disabled',
+          'success'
+        );
+      } else {
+        console.error('❌ Failed to toggle auto-management:', response?.error);
+        this.showNotification('Failed to update setting', 'error');
+        
+        // Revert toggle state
+        const toggle = document.getElementById('auto-management-toggle');
+        if (toggle) toggle.checked = !enabled;
+      }
+    } catch (error) {
+      console.error('Error toggling auto-management:', error);
+      this.showNotification('Error updating setting', 'error');
+      
+      // Revert toggle state
+      const toggle = document.getElementById('auto-management-toggle');
+      if (toggle) toggle.checked = !enabled;
+    }
+  }
+
+  /**
+   * Format duration in seconds to human readable format
+   */
+  formatDuration(seconds) {
+    if (seconds < 60) {
+      return `${seconds}s`;
+    } else if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      return `${minutes}m`;
+    } else {
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      return `${hours}h ${minutes}m`;
     }
   }
 

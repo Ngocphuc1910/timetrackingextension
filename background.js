@@ -134,6 +134,30 @@ class StorageManager {
     };
   }
 
+  async getTimeData(startDate, endDate = null) {
+    if (!endDate) {
+      endDate = startDate;
+    }
+    
+    try {
+      const storage = await chrome.storage.local.get(['stats']);
+      const allStats = storage.stats || {};
+      const result = {};
+      
+      // Filter stats by date range
+      Object.keys(allStats).forEach(date => {
+        if (date >= startDate && date <= endDate) {
+          result[date] = allStats[date];
+        }
+      });
+      
+      return result;
+    } catch (error) {
+      console.error('Failed to get time data:', error);
+      throw error;
+    }
+  }
+
   async getTopSites(limit = 5) {
     const stats = await this.getTodayStats();
     if (!stats.sites) return [];
@@ -572,6 +596,7 @@ class BlockingManager {
     this.focusMode = false;
     this.blockedSites = new Set();
     this.temporaryOverrides = new Map(); // domain -> expiry timestamp
+    this.urlCache = new Map(); // tabId -> original URL
     this.focusStartTime = null;
     this.blockedAttempts = 0;
     
@@ -625,11 +650,24 @@ class BlockingManager {
         this.focusStartTime = Date.now();
         this.blockedAttempts = 0;
         await this.updateBlockingRules();
-        console.log('🎯 Focus mode ENABLED');
+        
+        // Get current blocked sites list
+        const blockedSites = Array.from(this.blockedSites);
+        console.log('🔒 Focus mode ENABLED with blocked sites:', blockedSites);
+        
+        // Broadcast focus state with blocked sites
+        if (this.tracker) {
+          this.tracker.broadcastFocusStateChange(true);
+        }
       } else {
         this.focusStartTime = null;
         await this.clearBlockingRules();
-        console.log('🎯 Focus mode DISABLED');
+        console.log('🔓 Focus mode DISABLED');
+        
+        // Broadcast focus state change
+        if (this.tracker) {
+          this.tracker.broadcastFocusStateChange(false);
+        }
       }
       
       // Save state
@@ -638,7 +676,8 @@ class BlockingManager {
       return {
         success: true,
         focusMode: this.focusMode,
-        focusStartTime: this.focusStartTime
+        focusStartTime: this.focusStartTime,
+        blockedSites: Array.from(this.blockedSites)
       };
     } catch (error) {
       console.error('Error toggling focus mode:', error);
@@ -863,6 +902,36 @@ class BlockingManager {
   }
 
   /**
+   * Cache URL before potential blocking
+   */
+  cacheUrl(tabId, url) {
+    if (this.focusMode && url && !url.startsWith('chrome-extension://') && !url.startsWith('chrome://')) {
+      const domain = url.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+      if (this.blockedSites.has(domain) && !this.temporaryOverrides.has(domain)) {
+        this.urlCache.set(tabId, url);
+        console.log(`🔗 Cached URL for tab ${tabId}: ${url}`);
+      }
+    }
+  }
+
+  /**
+   * Get cached URL for tab
+   */
+  getCachedUrl(tabId) {
+    const url = this.urlCache.get(tabId);
+    // Don't delete immediately - keep for auto-redirect on reload
+    return url;
+  }
+
+  /**
+   * Clear cached URL for tab (call when actually navigating)
+   */
+  clearCachedUrl(tabId) {
+    this.urlCache.delete(tabId);
+    console.log(`🧹 Cleared cached URL for tab ${tabId}`);
+  }
+
+  /**
    * Get focus session stats
    */
   getFocusStats() {
@@ -962,9 +1031,25 @@ class FocusTimeTracker {
       tabId: null,
       domain: null,
       startTime: null,
+      savedTime: 0,
       isActive: false
     };
     this.saveInterval = null;
+    
+    // Enhanced activity management
+    this.isSessionPaused = false;
+    this.pausedAt = null;
+    this.totalPausedTime = 0;
+    this.inactivityThreshold = 300000; // 5 minutes
+    this.lastActivityTime = Date.now();
+    this.autoManagementEnabled = true;
+    
+    // Focus state tracking
+    this.latestFocusState = false;
+    
+    // User authentication state
+    this.currentUserId = null;
+    this.userInfo = null;
     
     this.initialize();
   }
@@ -1016,8 +1101,22 @@ class FocusTimeTracker {
       this.handleWindowFocusChanged(windowId);
     });
 
+    // Navigation events for URL caching
+    chrome.webNavigation.onBeforeNavigate.addListener((details) => {
+      if (details.frameId === 0) { // Main frame only
+        this.blockingManager.cacheUrl(details.tabId, details.url);
+      }
+    });
+
     // Message handling from popup and content scripts
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      this.handleMessage(message, sender, sendResponse);
+      return true; // Keep message channel open for async responses
+    });
+
+    // External message handling from web apps (externally_connectable domains)
+    chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+      console.log('📨 External message received from:', sender.origin);
       this.handleMessage(message, sender, sendResponse);
       return true; // Keep message channel open for async responses
     });
@@ -1056,12 +1155,14 @@ class FocusTimeTracker {
    */
   async handleTabUpdated(tabId, changeInfo, tab) {
     try {
-      console.log('📝 Tab updated:', { tabId, status: changeInfo.status, url: tab.url });
+      // Only log when status changes or URL changes
+      if (changeInfo.status || changeInfo.url) {
+        console.log('📝 Tab updated:', { tabId, status: changeInfo.status, url: tab.url });
+      }
       
       // Only track when tab is complete and is the active tab
       if (changeInfo.status === 'complete' && tab.active && tab.url) {
         const domain = this.extractDomain(tab.url);
-        console.log('🌐 Extracted domain:', domain);
         
         // If domain changed, restart tracking
         if (this.currentSession.tabId === tabId && this.currentSession.domain !== domain) {
@@ -1083,6 +1184,8 @@ class FocusTimeTracker {
       if (this.currentSession.tabId === tabId) {
         await this.stopCurrentTracking();
       }
+      // Clean up cached URL
+      this.blockingManager.urlCache.delete(tabId);
     } catch (error) {
       console.error('Error handling tab removal:', error);
     }
@@ -1130,6 +1233,22 @@ class FocusTimeTracker {
           sendResponse({ success: true, data: stats });
           break;
 
+        case 'GET_TIME_DATA_RANGE':
+          try {
+            const { startDate, endDate } = message.payload;
+            const timeData = await this.storageManager.getTimeData(startDate, endDate);
+            sendResponse({ success: true, data: timeData });
+          } catch (error) {
+            console.error('Error getting time data range:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_SETTINGS':
+          const settings = await this.storageManager.getSettings();
+          sendResponse({ success: true, data: settings });
+          break;
+
         case 'GET_TOP_SITES':
           const topSites = await this.storageManager.getTopSites(message.payload?.limit || 5);
           sendResponse({ success: true, data: topSites });
@@ -1145,6 +1264,27 @@ class FocusTimeTracker {
           sendResponse({ success: true });
           break;
 
+        case 'ENHANCED_ACTIVITY_DETECTED':
+          await this.handleEnhancedActivityDetected(message.payload);
+          sendResponse({ success: true });
+          break;
+
+        case 'ACTIVITY_HEARTBEAT':
+          this.updateActivity(message.payload);
+          sendResponse({ success: true });
+          break;
+
+        case 'GET_ACTIVITY_STATE':
+          const activityState = this.getActivityState();
+          sendResponse({ success: true, data: activityState });
+          break;
+
+        case 'TOGGLE_AUTO_MANAGEMENT':
+          const enabled = message.payload?.enabled ?? true;
+          await this.setAutoManagement(enabled);
+          sendResponse({ success: true, enabled });
+          break;
+
         // Blocking system messages
         case 'TOGGLE_FOCUS_MODE':
           const toggleResult = await this.blockingManager.toggleFocusMode();
@@ -1152,12 +1292,55 @@ class FocusTimeTracker {
             type: 'FOCUS_MODE_CHANGED',
             payload: { focusMode: toggleResult.focusMode }
           });
+          // Broadcast state change to all listeners
+          this.broadcastFocusStateChange(toggleResult.focusMode);
           sendResponse(toggleResult);
           break;
 
         case 'ADD_BLOCKED_SITE':
           const addResult = await this.blockingManager.addBlockedSite(message.payload?.domain);
           sendResponse(addResult);
+          break;
+
+        case 'BLOCK_MULTIPLE_SITES':
+          try {
+            const domains = message.payload?.domains || [];
+            if (!Array.isArray(domains) || domains.length === 0) {
+              sendResponse({ success: false, error: 'Invalid domains array' });
+              break;
+            }
+            
+            console.log('📦 Batch blocking multiple sites:', domains);
+            const results = [];
+            let successCount = 0;
+            let failureCount = 0;
+            
+            // Block all sites in batch
+            for (const domain of domains) {
+              try {
+                const result = await this.blockingManager.addBlockedSite(domain);
+                results.push({ domain, success: result.success, error: result.error });
+                if (result.success) {
+                  successCount++;
+                } else {
+                  failureCount++;
+                }
+              } catch (error) {
+                results.push({ domain, success: false, error: error.message });
+                failureCount++;
+              }
+            }
+            
+            console.log(`✅ Batch blocking completed: ${successCount} success, ${failureCount} failed`);
+            sendResponse({ 
+              success: true, 
+              results,
+              summary: { successCount, failureCount, total: domains.length }
+            });
+          } catch (error) {
+            console.error('❌ Batch blocking failed:', error);
+            sendResponse({ success: false, error: error.message });
+          }
           break;
 
         case 'REMOVE_BLOCKED_SITE':
@@ -1209,6 +1392,68 @@ class FocusTimeTracker {
           sendResponse({ success: true });
           break;
 
+        case 'SET_USER_ID':
+          // Store user ID for override session attribution
+          try {
+            console.log('🔍 DEBUG: SET_USER_ID received:', message.payload);
+            
+            this.currentUserId = message.payload?.userId;
+            this.userInfo = {
+              userId: message.payload?.userId,
+              userEmail: message.payload?.userEmail,
+              displayName: message.payload?.displayName
+            };
+            console.log('✅ User ID set in extension:', this.currentUserId);
+            console.log('🔍 DEBUG: Full user info stored:', this.userInfo);
+            
+            // Notify popup about user info update
+            try {
+              chrome.runtime.sendMessage({
+                type: 'USER_INFO_UPDATED',
+                payload: this.userInfo
+              });
+            } catch (error) {
+              // Popup might not be open, ignore error
+              console.log('📝 Popup not available for user info update notification');
+            }
+            
+            sendResponse({ success: true, userId: this.currentUserId });
+          } catch (error) {
+            console.error('❌ DEBUG: Error setting user ID:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'RECORD_OVERRIDE_SESSION':
+          // Forward to web app with user ID if available
+          try {
+            if (!this.currentUserId) {
+              console.warn('⚠️ No user ID available for override session');
+              sendResponse({ 
+                success: false, 
+                error: 'No user ID available. Please ensure you are logged in to the web app.' 
+              });
+              return;
+            }
+
+            const enhancedPayload = {
+              ...message.payload,
+              userId: this.currentUserId,
+              timestamp: Date.now(),
+              source: 'extension'
+            };
+            
+            console.log('📤 Recording override session:', enhancedPayload);
+            console.log('🔍 Current user ID:', this.currentUserId);
+            
+            this.forwardToWebApp('RECORD_OVERRIDE_SESSION', enhancedPayload);
+            sendResponse({ success: true, payload: enhancedPayload });
+          } catch (error) {
+            console.error('❌ Error recording override session:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
         case 'GET_SESSION_TIME':
           const sessionTime = this.blockingManager.focusStartTime 
             ? Date.now() - this.blockingManager.focusStartTime 
@@ -1219,6 +1464,30 @@ class FocusTimeTracker {
         case 'GET_DEBUG_INFO':
           const debugInfo = this.blockingManager.getDebugInfo(message.payload?.domain);
           sendResponse({ success: true, data: debugInfo });
+          break;
+
+        case 'GET_CACHED_URL':
+          const cachedUrl = this.blockingManager.getCachedUrl(sender.tab?.id);
+          sendResponse({ success: true, data: { url: cachedUrl } });
+          break;
+
+        case 'GET_USER_INFO':
+          try {
+            const userInfo = this.userInfo || null;
+            console.log('📤 Sending user info to popup:', userInfo);
+            sendResponse({ 
+              success: true, 
+              data: userInfo 
+            });
+          } catch (error) {
+            console.error('❌ Error getting user info:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'CLEAR_CACHED_URL':
+          this.blockingManager.clearCachedUrl(sender.tab?.id);
+          sendResponse({ success: true });
           break;
 
         case 'RESET_BLOCKING_STATE':
@@ -1320,6 +1589,74 @@ class FocusTimeTracker {
           }
           break;
 
+        case 'ENABLE_FOCUS_MODE':
+          try {
+            // Enable focus mode if not already enabled
+            if (!this.blockingManager.focusMode) {
+              const result = await this.blockingManager.toggleFocusMode();
+              await this.stateManager.dispatch({
+                type: 'FOCUS_MODE_CHANGED',
+                payload: { focusMode: true }
+              });
+              // Broadcast state change to all listeners
+              this.broadcastFocusStateChange(true);
+              sendResponse({ success: true, data: { focusMode: true } });
+            } else {
+              sendResponse({ success: true, data: { focusMode: true } });
+            }
+          } catch (error) {
+            console.error('Error enabling focus mode:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'DISABLE_FOCUS_MODE':
+          try {
+            // Disable focus mode if currently enabled
+            if (this.blockingManager.focusMode) {
+              const result = await this.blockingManager.toggleFocusMode();
+              await this.stateManager.dispatch({
+                type: 'FOCUS_MODE_CHANGED',
+                payload: { focusMode: false }
+              });
+              // Broadcast state change to all listeners
+              this.broadcastFocusStateChange(false);
+              sendResponse({ success: true, data: { focusMode: false } });
+            } else {
+              sendResponse({ success: true, data: { focusMode: false } });
+            }
+          } catch (error) {
+            console.error('Error disabling focus mode:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_FOCUS_STATE':
+          try {
+            // Get focus mode from BlockingManager (authoritative source)
+            const focusStats = this.blockingManager.getFocusStats();
+            sendResponse({ 
+              success: true, 
+              data: { 
+                focusMode: this.blockingManager.focusMode,
+                ...focusStats 
+              } 
+            });
+          } catch (error) {
+            console.error('Error getting focus state:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
+        case 'GET_FOCUS_STATUS':
+          try {
+            sendResponse({ success: true, data: { focusMode: this.blockingManager.focusMode } });
+          } catch (error) {
+            console.error('Error getting focus status:', error);
+            sendResponse({ success: false, error: error.message });
+          }
+          break;
+
         default:
           console.warn('❓ Unknown message type:', message.type);
           sendResponse({ success: false, error: 'Unknown message type' });
@@ -1375,6 +1712,7 @@ class FocusTimeTracker {
         tabId: tab.id,
         domain: domain,
         startTime: now,
+        savedTime: 0,
         isActive: true
       };
 
@@ -1402,13 +1740,14 @@ class FocusTimeTracker {
       }
 
       const now = Date.now();
-      const timeSpent = now - this.currentSession.startTime;
+      const timeSpent = now - this.currentSession.startTime + (this.currentSession.savedTime || 0);
       const domain = this.currentSession.domain;
 
-      // Only save if spent more than 1 second
+      // Only save if spent more than 1 second and round down to nearest second
       if (timeSpent > 1000 && domain) {
-        await this.storageManager.saveTimeEntry(domain, timeSpent, 1);
-        console.log(`Stopped tracking: ${domain}, Time: ${this.storageManager.formatTime(timeSpent)}`);
+        const roundedTime = Math.floor(timeSpent / 1000) * 1000; // Round to nearest second
+        await this.storageManager.saveTimeEntry(domain, roundedTime, 1);
+        console.log(`Stopped tracking: ${domain}, Time: ${this.storageManager.formatTime(roundedTime)}`);
       }
 
       await this.stateManager.dispatch({
@@ -1419,6 +1758,7 @@ class FocusTimeTracker {
         tabId: null,
         domain: null,
         startTime: null,
+        savedTime: 0,
         isActive: false
       };
     } catch (error) {
@@ -1431,10 +1771,13 @@ class FocusTimeTracker {
    */
   async pauseTracking() {
     if (this.currentSession.isActive) {
-      const timeSpent = Date.now() - this.currentSession.startTime;
-      if (timeSpent > 1000) {
-        await this.storageManager.saveTimeEntry(this.currentSession.domain, timeSpent, 0);
+      const activeDuration = Date.now() - this.currentSession.startTime;
+      const totalDuration = (this.currentSession.savedTime || 0) + activeDuration;
+      if (totalDuration > 1000) {
+        await this.storageManager.saveTimeEntry(this.currentSession.domain, totalDuration, 0);
       }
+      // Reset savedTime since we've persisted it
+      this.currentSession.savedTime = 0;
       this.currentSession.isActive = false;
       this.currentSession.startTime = null;
     }
@@ -1463,13 +1806,33 @@ class FocusTimeTracker {
   }
 
   /**
-   * Save current session progress
+   * Save current session progress (enhanced with pause tracking)
    */
   async saveCurrentSession() {
     try {
-      if (this.currentSession.isActive && this.currentSession.startTime) {
-        const timeSpent = Date.now() - this.currentSession.startTime;
-        await this.storageManager.saveTimeEntry(this.currentSession.domain, timeSpent, 0);
+      if (this.currentSession.isActive && this.currentSession.startTime && !this.isSessionPaused) {
+        const now = Date.now();
+        const grossTimeSpent = now - this.currentSession.startTime;
+        const netTimeSpent = grossTimeSpent - this.totalPausedTime;
+        
+        // Only save if we have at least 1 minute of activity
+        if (netTimeSpent >= 60000) {
+          const minutesToSave = Math.floor(netTimeSpent / 60000) * 60000;
+          await this.storageManager.saveTimeEntry(this.currentSession.domain, minutesToSave, 0);
+          
+          // Update accumulated savedTime and reset counters
+          this.currentSession.savedTime = (this.currentSession.savedTime || 0) + minutesToSave;
+          const remainder = netTimeSpent - minutesToSave;
+          // Preserve remainder for continuous counting
+          this.currentSession.startTime = now - remainder;
+          this.totalPausedTime = 0;
+          
+          console.log('💾 Session saved:', {
+            domain: this.currentSession.domain,
+            savedMinutes: this.storageManager.formatTime(this.currentSession.savedTime),
+            remainingTime: this.storageManager.formatTime(netTimeSpent - minutesToSave)
+          });
+        }
       }
     } catch (error) {
       console.error('Error saving session:', error);
@@ -1533,6 +1896,222 @@ class FocusTimeTracker {
       }
     } catch (error) {
       console.error('❌ Error getting current tab:', error);
+    }
+  }
+
+  /**
+   * Enhanced activity detection handler
+   */
+  async handleEnhancedActivityDetected(activityData) {
+    try {
+      console.log('🎯 Enhanced activity detected:', {
+        isActive: activityData.isActive,
+        timeSinceActivity: Math.round(activityData.timeSinceLastActivity / 1000) + 's',
+        isVisible: activityData.isVisible,
+        eventType: activityData.eventType
+      });
+
+      this.updateActivity(activityData);
+
+      // Handle inactivity-based auto-pause
+      if (!activityData.isActive && this.autoManagementEnabled && !this.isSessionPaused) {
+        if (activityData.timeSinceLastActivity > this.inactivityThreshold) {
+          await this.pauseSession(activityData.timeSinceLastActivity);
+        }
+      }
+      
+      // Handle activity-based auto-resume
+      if (activityData.isActive && this.isSessionPaused && this.autoManagementEnabled) {
+        await this.resumeSession();
+      }
+    } catch (error) {
+      console.error('Error handling enhanced activity:', error);
+    }
+  }
+
+  /**
+   * Update activity timestamp and state
+   */
+  updateActivity(activityData = {}) {
+    this.lastActivityTime = Date.now();
+    
+    if (activityData.isActive) {
+      // Resume session if it was paused and activity is detected
+      if (this.isSessionPaused && this.autoManagementEnabled) {
+        this.resumeSession();
+      }
+    }
+  }
+
+  /**
+   * Pause session due to inactivity
+   */
+  async pauseSession(inactivityDuration = 0) {
+    if (this.isSessionPaused || !this.currentSession.isActive) {
+      return;
+    }
+
+    console.log(`🛑 Pausing session due to inactivity: ${Math.round(inactivityDuration / 1000)}s`);
+    
+    // Save current progress before pausing
+    await this.saveCurrentSession();
+    
+    this.isSessionPaused = true;
+    this.pausedAt = Date.now();
+    
+    // Reset total paused time for new session
+    this.totalPausedTime = 0;
+  }
+
+  /**
+   * Resume session after activity detected
+   */
+  async resumeSession() {
+    if (!this.isSessionPaused) {
+      return;
+    }
+
+    const pausedDuration = this.pausedAt ? Date.now() - this.pausedAt : 0;
+    this.totalPausedTime += pausedDuration;
+    
+    console.log(`▶️ Resuming session, paused for: ${Math.round(pausedDuration / 1000)}s`);
+    
+    this.isSessionPaused = false;
+    this.pausedAt = null;
+    this.lastActivityTime = Date.now();
+  }
+
+  /**
+   * Get current activity state
+   */
+  getActivityState() {
+    return {
+      isUserActive: Date.now() - this.lastActivityTime < this.inactivityThreshold,
+      lastActivity: new Date(this.lastActivityTime),
+      inactivityDuration: Math.round((Date.now() - this.lastActivityTime) / 1000),
+      isSessionPaused: this.isSessionPaused,
+      pausedAt: this.pausedAt ? new Date(this.pausedAt) : null,
+      totalPausedTime: this.totalPausedTime,
+      autoManagementEnabled: this.autoManagementEnabled,
+      inactivityThreshold: this.inactivityThreshold
+    };
+  }
+
+  /**
+   * Toggle auto-management of sessions
+   */
+  async setAutoManagement(enabled) {
+    this.autoManagementEnabled = enabled;
+    
+    // Save setting to storage
+    const settings = await this.storageManager.getSettings();
+    settings.autoSessionManagement = enabled;
+    await this.storageManager.saveSettings(settings);
+    
+    console.log('🔧 Auto-management:', enabled ? 'enabled' : 'disabled');
+    
+    // If disabled and session is paused, resume it
+    if (!enabled && this.isSessionPaused) {
+      await this.resumeSession();
+    }
+  }
+
+  /**
+   * Broadcast focus state changes to all listeners
+   */
+  broadcastFocusStateChange(isActive) {
+    console.log(`🔄 Broadcasting focus state change: ${isActive}`);
+    
+    // Get current blocked sites from BlockingManager
+    const blockedSites = Array.from(this.blockingManager.blockedSites || new Set());
+    console.log('📋 Current blocked sites in extension:', blockedSites);
+    
+    const focusState = {
+      isActive,
+      isVisible: isActive,
+      isFocused: isActive,
+      blockedSites // Include blocked sites list
+    };
+
+    console.log('📤 Broadcasting full focus state:', focusState);
+
+    // Send to all tabs with content scripts
+    chrome.tabs.query({}, (tabs) => {
+      tabs.forEach(tab => {
+        if (tab.id && this.isTrackableUrl(tab.url)) {
+          chrome.tabs.sendMessage(tab.id, {
+            type: 'FOCUS_STATE_CHANGED',
+            payload: focusState
+          }).catch(() => {
+            // Ignore errors for tabs without content scripts
+          });
+        }
+      });
+    });
+
+    // Forward directly to web app for redundancy
+    this.forwardToWebApp('EXTENSION_FOCUS_STATE_CHANGED', focusState);
+  }
+
+  /**
+   * Forward messages to web app if available
+   */
+  forwardToWebApp(type, payload) {
+    try {
+      console.log('📤 Forwarding message to web app:', type);
+      
+      // Find the most recent/active tab running the web app
+      chrome.tabs.query({ url: "*://localhost:*/*" }, (tabs) => {
+        if (tabs.length > 0) {
+          // Filter for likely dev server ports and get the most recently accessed
+          const appTabs = tabs.filter(tab => {
+            const url = new URL(tab.url);
+            const port = parseInt(url.port);
+            return port >= 3000 && port <= 9000; // Common dev server ports
+          });
+          
+          if (appTabs.length > 0) {
+            // Send to the first active tab only to prevent broadcast
+            const targetTab = appTabs[0];
+            console.log('✅ Sending to web app tab:', targetTab.url);
+            
+            chrome.tabs.sendMessage(targetTab.id, { type, payload })
+              .then(response => {
+                console.log('✅ Message delivered successfully');
+              })
+              .catch(error => {
+                console.warn('⚠️ Message delivery failed:', error.message);
+              });
+          }
+        }
+      });
+      
+      // Try production domain with both HTTP and HTTPS, with and without www
+      const productionUrls = [
+        "https://make10000hours.com/*",
+        "https://www.make10000hours.com/*",
+        "http://make10000hours.com/*",
+        "http://www.make10000hours.com/*"
+      ];
+      
+      productionUrls.forEach(urlPattern => {
+        chrome.tabs.query({ url: urlPattern }, (tabs) => {
+          if (tabs.length > 0) {
+            const targetTab = tabs[0];
+            console.log('✅ Found production tab:', targetTab.url);
+            chrome.tabs.sendMessage(targetTab.id, { type, payload })
+              .then(response => {
+                console.log('✅ Production message delivered successfully');
+              })
+              .catch(error => {
+                console.warn('⚠️ Production message failed:', error.message);
+              });
+          }
+        });
+      });
+      
+    } catch (error) {
+      console.error('❌ Error in forwardToWebApp:', error);
     }
   }
 }

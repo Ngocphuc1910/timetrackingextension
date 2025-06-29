@@ -26,6 +26,31 @@
           </div>
         </div>
       </div>
+      
+      <!-- User Info Section -->
+      <div class="user-info-section">
+        <div id="user-info" class="user-info hidden">
+          <div class="user-avatar">
+            <span id="user-avatar-text" class="avatar-text">?</span>
+          </div>
+          <div class="user-details">
+            <div id="user-name" class="user-name">Not synced</div>
+            <div id="user-email" class="user-email">No user connected</div>
+          </div>
+          <div class="sync-status">
+            <span id="sync-indicator" class="sync-dot"></span>
+          </div>
+        </div>
+        <div id="no-user-info" class="no-user-info">
+          <div class="sync-prompt">
+            <span class="sync-icon">🔗</span>
+            <div class="sync-text">
+              <div class="sync-title">Not connected to web app</div>
+              <div class="sync-subtitle">Open make10000hours.com to sync</div>
+            </div>
+          </div>
+        </div>
+      </div>
     </header>
 
     <!-- Tab Navigation -->
@@ -91,6 +116,18 @@
               </div>
             </div>
           </div>
+
+          <!-- Activity Status -->
+          <div id="activity-status" class="activity-status">
+            <div class="activity-indicator">
+              <span id="activity-dot" class="activity-dot active"></span>
+              <span id="activity-text" class="activity-text">Active</span>
+            </div>
+            <div id="pause-info" class="pause-info hidden">
+              <span class="pause-icon">⏸️</span>
+              <span id="pause-duration" class="pause-duration">Paused for 0s</span>
+            </div>
+          </div>
         </section>
 
         <!-- Top Sites Today -->
@@ -136,15 +173,26 @@
       </div>
       
       <div class="secondary-actions">
-        <button id="settings-btn" class="secondary-btn">
-          <span class="btn-icon">⚙️</span>
-          Settings
-        </button>
-        
-        <button id="export-data-btn" class="secondary-btn">
-          <span class="btn-icon">📤</span>
-          Export Data
-        </button>
+        <!-- Auto-Management Toggle -->
+        <div class="toggle-container">
+          <label class="toggle-label">
+            <input type="checkbox" id="auto-management-toggle" checked>
+            <span class="toggle-slider"></span>
+            <span class="toggle-text">Auto-pause on inactivity</span>
+          </label>
+        </div>
+
+        <div class="actions-row">
+          <button id="settings-btn" class="secondary-btn">
+            <span class="btn-icon">⚙️</span>
+            Settings
+          </button>
+          
+          <button id="export-data-btn" class="secondary-btn">
+            <span class="btn-icon">📤</span>
+            Export Data
+          </button>
+        </div>
       </div>
     </section>
 
